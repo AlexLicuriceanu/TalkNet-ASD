@@ -1,9 +1,6 @@
 # Other files
-*.model
-*.pth
 *.wav
 *.mp4
-*.txt
 *.pcm
 data/
 tests/
