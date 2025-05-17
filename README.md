@@ -6,7 +6,7 @@ This repository contains the code for our ACM MM 2021 paper (oral), TalkNet, an 
 
 A new [demo page](https://www.sievedata.com/functions/sieve/talknet-asd). Thanks the contribution from [mvoodarla](https://github.com/mvoodarla) !
 
-![overall.png](utils/overall.png)
+![overall.png](talknet_asd/utils/overall.png)
 
 - [**Awesome ASD**](https://github.com/TaoRuijie/TalkNet_ASD/blob/main/awesomeASD.md): Papers about active speaker detection in last years.
 
