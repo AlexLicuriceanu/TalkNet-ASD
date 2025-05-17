@@ -13,6 +13,10 @@ from scenedetect.scene_manager import SceneManager
 from scenedetect.frame_timecode import FrameTimecode
 from scenedetect.stats_manager import StatsManager
 from scenedetect.detectors import ContentDetector
+from scenedetect import open_video
+from scenedetect.scene_manager import SceneManager
+from scenedetect.detectors import ContentDetector
+import os, pickle
 
 from .model.faceDetector.s3fd import S3FD
 from .talkNet import talkNet
@@ -128,8 +132,8 @@ def run_talknet(
     # Face tracking
     allTracks, vidTracks = [], []
     for shot in scene:
-        if shot[1].frame_num - shot[0].frame_num >= args.minTrack:
-            allTracks.extend(track_shot(args, faces[shot[0].frame_num:shot[1].frame_num]))
+        if shot[1] - shot[0] >= args.minTrack:
+            allTracks.extend(track_shot(args, faces[shot[0]:shot[1]]))
             
     if args.debug:
         sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" %len(allTracks))
@@ -158,24 +162,32 @@ def run_talknet(
     visualization(vidTracks, scores, args)
 
 def scene_detect(args):
-    # CPU: Scene detection, output is the list of each shot's time duration
-    videoManager = VideoManager([args.videoFilePath])
-    statsManager = StatsManager()
-    sceneManager = SceneManager(statsManager)
-    sceneManager.add_detector(ContentDetector())
-    baseTimecode = videoManager.get_base_timecode()
-    videoManager.set_downscale_factor()
-    videoManager.start()
-    sceneManager.detect_scenes(frame_source = videoManager)
-    sceneList = sceneManager.get_scene_list(baseTimecode)
-    savePath = os.path.join(args.pyworkPath, 'scene.pckl')
-    if sceneList == []:
-        sceneList = [(videoManager.get_base_timecode(),videoManager.get_current_timecode())]
-    with open(savePath, 'wb') as fil:
-        pickle.dump(sceneList, fil)
-        if args.debug:
-            sys.stderr.write('%s - scenes detected %d\n'%(args.videoFilePath, len(sceneList)))
-    return sceneList
+    # Open video
+    video = open_video(args.videoFilePath)
+
+    # Set up scene detection
+    scene_manager = SceneManager()
+    scene_manager.add_detector(ContentDetector())
+    scene_manager.detect_scenes(video)
+
+    # Convert scenes to list of (start_frame, end_frame)
+    scene_list_raw = scene_manager.get_scene_list()
+    scene_list = [(s[0].get_frames(), s[1].get_frames()) for s in scene_list_raw]
+
+    # Fallback: if no scenes detected, default to whole video range
+    if not scene_list:
+        total_frames = int(video.frame_rate * video.duration.get_seconds())
+        scene_list = [(0, total_frames)]
+
+    # Save to pickle
+    save_path = os.path.join(args.pyworkPath, 'scene.pckl')
+    with open(save_path, 'wb') as fil:
+        pickle.dump(scene_list, fil)
+
+    if args.debug:
+        sys.stderr.write(f"{args.videoFilePath} - scenes detected: {len(scene_list)}\n")
+
+    return scene_list
 
 def inference_video(args):
     # GPU: Face detection, output is the list contains the face location and score in this frame
