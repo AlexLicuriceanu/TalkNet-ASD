@@ -27,5 +27,6 @@ setup(
         "ffmpeg",
         "gdown",
         "youtube-dl",
+        "ultralytics",
     ],
 ) 

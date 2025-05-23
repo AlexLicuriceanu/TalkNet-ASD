@@ -21,6 +21,7 @@ import os, pickle
 from .model.faceDetector.s3fd import S3FD
 from .talkNet import talkNet
 from .utils import *
+from ultralytics import YOLO
 
 warnings.filterwarnings("ignore")
 
@@ -50,7 +51,9 @@ def run_talknet(
     crop_scale: float = 0.40,
     start_time: int = 0,
     duration: int = 0,
-    debug: bool = False
+    debug: bool = False,
+    batch_size: int = 16,
+    visualize: bool = False,
 ):
     
     # Create a class to hold arguments
@@ -66,6 +69,8 @@ def run_talknet(
             self.start = start_time
             self.duration = duration
             self.debug = debug
+            self.batchSize = batch_size
+            self.visualize = visualize
             
             # Set up paths
             if output_dir is None:
@@ -125,7 +130,7 @@ def run_talknet(
         sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scene detection and save in %s \r\n" %(args.pyworkPath))
 
     # Face detection
-    faces = inference_video(args)
+    faces = inference_video_yolo(args)
     if args.debug:
         sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" %(args.pyworkPath))
 
@@ -159,7 +164,8 @@ def run_talknet(
     if args.debug:
         sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scores extracted and saved in %s \r\n" %args.pyworkPath)
 
-    visualization(vidTracks, scores, args)
+    if args.visualize:
+        visualization(vidTracks, scores, args)
 
 def scene_detect(args):
     # Open video
@@ -209,6 +215,49 @@ def inference_video(args):
     with open(savePath, 'wb') as fil:
         pickle.dump(dets, fil)
     return dets
+
+
+
+def inference_video_yolo(args):
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model', 'yolov11n-face.pt')
+    model = YOLO(model_path).to('cuda')
+
+    flist = sorted(glob.glob(os.path.join(args.pyframesPath, '*.jpg')))
+    dets = []
+
+    batch_size = args.batchSize
+
+    for i in range(0, len(flist), batch_size):
+        batch_files = flist[i:i + batch_size]
+        batch_images = [cv2.imread(f) for f in batch_files]
+
+        # Run YOLOv8 on the batch
+        results = model.predict(batch_images, conf=0.5, verbose=False)
+
+        for j, result in enumerate(results):
+            frame_idx = i + j
+            dets.append([])
+            boxes = result.boxes.cpu().numpy()
+
+            if boxes and hasattr(boxes, 'xyxy'):
+                for bbox, conf in zip(boxes.xyxy, boxes.conf):
+                    x1, y1, x2, y2 = bbox.tolist()
+                    dets[-1].append({
+                        'frame': frame_idx,
+                        'bbox': [x1, y1, x2, y2],
+                        'conf': float(conf)
+                    })
+
+            if args.debug:
+                sys.stderr.write(f'{args.videoFilePath}-{frame_idx:05d}; {len(dets[-1])} dets\r')
+
+    # Save detections
+    savePath = os.path.join(args.pyworkPath, 'faces.pckl')
+    with open(savePath, 'wb') as fil:
+        pickle.dump(dets, fil)
+
+    return dets
+
 
 def bb_intersection_over_union(boxA, boxB, evalCol = False):
     # CPU: IOU Function to calculate overlap between two image
@@ -308,7 +357,8 @@ def evaluate_network(files, args):
     s.eval()
     allScores = []
     # durationSet = {1,2,4,6} # To make the result more reliable
-    durationSet = {1,1,1,2,2,2,3,3,4,5,6} # Use this line can get more reliable result
+    # durationSet = {1,1,1,2,2,2,3,3,4,5,6} # Use this line can get more reliable result
+    durationSet = {2, 3, 4}
     for file in tqdm.tqdm(files, total = len(files)):
         fileName = os.path.splitext(file.split('/')[-1])[0] # Load audio and video
         _, audio = wavfile.read(os.path.join(args.pycropPath, fileName + '.wav'))
