@@ -28,5 +28,6 @@ setup(
         "gdown",
         "youtube-dl",
         "ultralytics",
+        "PyTurboJPEG",
     ],
 ) 

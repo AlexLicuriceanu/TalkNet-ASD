@@ -22,6 +22,8 @@ from .model.faceDetector.s3fd import S3FD
 from .talkNet import talkNet
 from .utils import *
 from ultralytics import YOLO
+from turbojpeg import TurboJPEG
+jpeg = TurboJPEG()
 
 warnings.filterwarnings("ignore")
 
@@ -39,6 +41,11 @@ if os.path.isfile(PATH_PRETRAINED) == False:
 
 s.loadParameters(PATH_PRETRAINED)
 sys.stderr.write("Loaded pretrained TalkNet model\n")
+
+# Load YOLO model for face detection
+yolo_model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model', 'yolov11n-face.pt')
+yolo_model = YOLO(yolo_model_path).to('cuda')
+sys.stderr.write(f"Loaded YOLO model from {yolo_model_path}\n")
 
 def run_talknet(
     video_path: str,
@@ -149,7 +156,11 @@ def run_talknet(
 
     # Preload all frames to memory
     flist = sorted(glob.glob(os.path.join(args.pyframesPath, '*.jpg')))
-    frame_cache = {i: cv2.imread(f) for i, f in enumerate(flist)}
+    #frame_cache = {i: cv2.imread(f) for i, f in enumerate(flist)}
+    frame_cache = {}
+    for i, f in enumerate(flist):
+        with open(f, 'rb') as infile:
+            frame_cache[i] = jpeg.decode(infile.read())  # returns in BGR format by default
 
     # Load audio once
     sr, full_audio = wavfile.read(args.audioFilePath)
@@ -237,12 +248,7 @@ def inference_video(args):
         pickle.dump(dets, fil)
     return dets
 
-
-
 def inference_video_yolo(args):
-    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model', 'yolov11n-face.pt')
-    model = YOLO(model_path).to('cuda')
-
     flist = sorted(glob.glob(os.path.join(args.pyframesPath, '*.jpg')))
     dets = []
 
@@ -250,10 +256,16 @@ def inference_video_yolo(args):
 
     for i in range(0, len(flist), batch_size):
         batch_files = flist[i:i + batch_size]
-        batch_images = [cv2.imread(f) for f in batch_files]
+        # batch_images = [cv2.imread(f) for f in batch_files]
+        batch_images = []
+        for f in batch_files:
+            with open(f, 'rb') as infile:
+                jpeg_buf = infile.read()
+                image = jpeg.decode(jpeg_buf, flags=0)
+                batch_images.append(image)
 
         # Run YOLOv8 on the batch
-        results = model.predict(batch_images, conf=0.5, verbose=False)
+        results = yolo_model.predict(batch_images, conf=0.5, verbose=False)
 
         for j, result in enumerate(results):
             frame_idx = i + j
@@ -431,7 +443,9 @@ def evaluate_network(files, args):
     for file in tqdm.tqdm(files, total = len(files)):
         fileName = os.path.splitext(file.split('/')[-1])[0] # Load audio and video
         _, audio = wavfile.read(os.path.join(args.pycropPath, fileName + '.wav'))
+
         audioFeature = python_speech_features.mfcc(audio, 16000, numcep = 13, winlen = 0.025, winstep = 0.010)
+
         video = cv2.VideoCapture(os.path.join(args.pycropPath, fileName + '.avi'))
         videoFeature = []
         while video.isOpened():
@@ -467,8 +481,9 @@ def evaluate_network(files, args):
         allScores.append(allScore)	
     return allScores
 
+
 def visualization(tracks, scores, args):
-    # CPU: visulize the result for video format
+    # CPU: visualize the result for video format
     flist = glob.glob(os.path.join(args.pyframesPath, '*.jpg'))
     flist.sort()
     faces = [[] for i in range(len(flist))]
@@ -496,6 +511,3 @@ def visualization(tracks, scores, args):
         (os.path.join(args.pyaviPath, 'video_only.avi'), os.path.join(args.pyaviPath, 'audio.wav'), \
         args.nDataLoaderThread, os.path.join(args.pyaviPath,'video_out.avi'))) 
     output = subprocess.call(command, shell=True, stdout=None)
-
-#if __name__ == '__main__':
-#    run_talknet(video_path="/home/rhc/demo/001.avi", output_dir="/home/rhc/demo/output")
