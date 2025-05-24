@@ -144,8 +144,29 @@ def run_talknet(
         sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" %len(allTracks))
 
     # Face clips cropping
-    for ii, track in tqdm.tqdm(enumerate(allTracks), total=len(allTracks)):
-        vidTracks.append(crop_video(args, track, os.path.join(args.pycropPath, '%05d'%ii)))
+    # for ii, track in tqdm.tqdm(enumerate(allTracks), total=len(allTracks)):
+    #     vidTracks.append(crop_video(args, track, os.path.join(args.pycropPath, '%05d'%ii)))
+
+    # Preload all frames to memory
+    flist = sorted(glob.glob(os.path.join(args.pyframesPath, '*.jpg')))
+    frame_cache = {i: cv2.imread(f) for i, f in enumerate(flist)}
+
+    # Load audio once
+    sr, full_audio = wavfile.read(args.audioFilePath)
+
+    # Parallel crop using ThreadPool
+    from multiprocessing.pool import ThreadPool
+    from functools import partial
+
+    crop_fn = partial(crop_video, args=args, frame_cache=frame_cache, full_audio=full_audio, sr=sr)
+
+    args_list = [(track, os.path.join(args.pycropPath, f"{ii:05d}")) for ii, track in enumerate(allTracks)]
+
+    with ThreadPool(processes=os.cpu_count()) as pool:
+        vidTracks = list(tqdm.tqdm(pool.starmap(crop_fn, args_list), total=len(args_list)))
+
+
+
     savePath = os.path.join(args.pyworkPath, 'tracks.pckl')
     with open(savePath, 'wb') as fil:
         pickle.dump(vidTracks, fil)
@@ -308,42 +329,90 @@ def track_shot(args, sceneFaces):
                 tracks.append({'frame':frameI,'bbox':bboxesI})
     return tracks
 
-def crop_video(args, track, cropFile):
-    # CPU: crop the face clips
-    flist = glob.glob(os.path.join(args.pyframesPath, '*.jpg')) # Read the frames
-    flist.sort()
-    vOut = cv2.VideoWriter(cropFile + 't.avi', cv2.VideoWriter_fourcc(*'XVID'), 25, (224,224))# Write video
-    dets = {'x':[], 'y':[], 's':[]}
-    for det in track['bbox']: # Read the tracks
-        dets['s'].append(max((det[3]-det[1]), (det[2]-det[0]))/2) 
-        dets['y'].append((det[1]+det[3])/2) # crop center x 
-        dets['x'].append((det[0]+det[2])/2) # crop center y
-    dets['s'] = signal.medfilt(dets['s'], kernel_size=13)  # Smooth detections 
+# def crop_video(args, track, cropFile):
+#     # CPU: crop the face clips
+#     flist = glob.glob(os.path.join(args.pyframesPath, '*.jpg')) # Read the frames
+#     flist.sort()
+#     vOut = cv2.VideoWriter(cropFile + 't.avi', cv2.VideoWriter_fourcc(*'XVID'), 25, (224,224))# Write video
+#     dets = {'x':[], 'y':[], 's':[]}
+#     for det in track['bbox']: # Read the tracks
+#         dets['s'].append(max((det[3]-det[1]), (det[2]-det[0]))/2) 
+#         dets['y'].append((det[1]+det[3])/2) # crop center x 
+#         dets['x'].append((det[0]+det[2])/2) # crop center y
+#     dets['s'] = signal.medfilt(dets['s'], kernel_size=13)  # Smooth detections 
+#     dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
+#     dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
+#     for fidx, frame in enumerate(track['frame']):
+#         cs  = args.cropScale
+#         bs  = dets['s'][fidx]   # Detection box size
+#         bsi = int(bs * (1 + 2 * cs))  # Pad videos by this amount 
+#         image = cv2.imread(flist[frame])
+#         frame = numpy.pad(image, ((bsi,bsi), (bsi,bsi), (0, 0)), 'constant', constant_values=(110, 110))
+#         my  = dets['y'][fidx] + bsi  # BBox center Y
+#         mx  = dets['x'][fidx] + bsi  # BBox center X
+#         face = frame[int(my-bs):int(my+bs*(1+2*cs)),int(mx-bs*(1+cs)):int(mx+bs*(1+cs))]
+#         vOut.write(cv2.resize(face, (224, 224)))
+#     audioTmp    = cropFile + '.wav'
+#     audioStart  = (track['frame'][0]) / 25
+#     audioEnd    = (track['frame'][-1]+1) / 25
+#     vOut.release()
+#     command = ("ffmpeg -y -i %s -async 1 -ac 1 -vn -acodec pcm_s16le -ar 16000 -threads %d -ss %.3f -to %.3f %s -loglevel panic" % \
+#               (args.audioFilePath, args.nDataLoaderThread, audioStart, audioEnd, audioTmp)) 
+#     output = subprocess.call(command, shell=True, stdout=None) # Crop audio file
+#     _, audio = wavfile.read(audioTmp)
+#     command = ("ffmpeg -y -i %st.avi -i %s -threads %d -c:v copy -c:a copy %s.avi -loglevel panic" % \
+#               (cropFile, audioTmp, args.nDataLoaderThread, cropFile)) # Combine audio and video file
+#     output = subprocess.call(command, shell=True, stdout=None)
+#     os.remove(cropFile + 't.avi')
+#     return {'track':track, 'proc_track':dets}
+
+def crop_video(track, cropFile, args, frame_cache, full_audio, sr):
+    vOut = cv2.VideoWriter(cropFile + 't.avi', cv2.VideoWriter_fourcc(*'XVID'), 25, (224, 224))
+    dets = {'x': [], 'y': [], 's': []}
+
+    for det in track['bbox']:
+        dets['s'].append(max((det[3] - det[1]), (det[2] - det[0])) / 2)
+        dets['y'].append((det[1] + det[3]) / 2)
+        dets['x'].append((det[0] + det[2]) / 2)
+
+    dets['s'] = signal.medfilt(dets['s'], kernel_size=13)
     dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
     dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
+
     for fidx, frame in enumerate(track['frame']):
-        cs  = args.cropScale
-        bs  = dets['s'][fidx]   # Detection box size
-        bsi = int(bs * (1 + 2 * cs))  # Pad videos by this amount 
-        image = cv2.imread(flist[frame])
-        frame = numpy.pad(image, ((bsi,bsi), (bsi,bsi), (0, 0)), 'constant', constant_values=(110, 110))
-        my  = dets['y'][fidx] + bsi  # BBox center Y
-        mx  = dets['x'][fidx] + bsi  # BBox center X
-        face = frame[int(my-bs):int(my+bs*(1+2*cs)),int(mx-bs*(1+cs)):int(mx+bs*(1+cs))]
+        cs = args.cropScale
+        bs = dets['s'][fidx]
+        bsi = int(bs * (1 + 2 * cs))
+
+        image = frame_cache[frame]
+        padded = numpy.pad(image, ((bsi, bsi), (bsi, bsi), (0, 0)), 'constant', constant_values=110)
+
+        my = dets['y'][fidx] + bsi
+        mx = dets['x'][fidx] + bsi
+        face = padded[int(my - bs):int(my + bs * (1 + 2 * cs)),
+                      int(mx - bs * (1 + cs)):int(mx + bs * (1 + cs))]
         vOut.write(cv2.resize(face, (224, 224)))
-    audioTmp    = cropFile + '.wav'
-    audioStart  = (track['frame'][0]) / 25
-    audioEnd    = (track['frame'][-1]+1) / 25
+
     vOut.release()
-    command = ("ffmpeg -y -i %s -async 1 -ac 1 -vn -acodec pcm_s16le -ar 16000 -threads %d -ss %.3f -to %.3f %s -loglevel panic" % \
-              (args.audioFilePath, args.nDataLoaderThread, audioStart, audioEnd, audioTmp)) 
-    output = subprocess.call(command, shell=True, stdout=None) # Crop audio file
-    _, audio = wavfile.read(audioTmp)
-    command = ("ffmpeg -y -i %st.avi -i %s -threads %d -c:v copy -c:a copy %s.avi -loglevel panic" % \
-              (cropFile, audioTmp, args.nDataLoaderThread, cropFile)) # Combine audio and video file
-    output = subprocess.call(command, shell=True, stdout=None)
+
+    # Slice audio instead of calling ffmpeg
+    audio_start_idx = int((track['frame'][0] / 25) * sr)
+    audio_end_idx = int(((track['frame'][-1] + 1) / 25) * sr)
+    track_audio = full_audio[audio_start_idx:audio_end_idx]
+
+    audioTmp = cropFile + '.wav'
+    wavfile.write(audioTmp, sr, track_audio)
+
+    # Combine video and audio
+    command = (
+        f"ffmpeg -y -i {cropFile}t.avi -i {audioTmp} -threads {args.nDataLoaderThread} "
+        f"-c:v copy -c:a copy {cropFile}.avi -loglevel panic"
+    )
+    subprocess.call(command, shell=True, stdout=None)
     os.remove(cropFile + 't.avi')
-    return {'track':track, 'proc_track':dets}
+
+    return {'track': track, 'proc_track': dets}
+
 
 def extract_MFCC(file, outPath):
     # CPU: extract mfcc
